@@ -1,0 +1,9 @@
+services:
+  ctai-otc-bridge:
+    build: .
+    restart: unless-stopped
+    environment:
+      POCKET_OPTION_SSID: ${POCKET_OPTION_SSID}
+      BRIDGE_API_KEY: ${BRIDGE_API_KEY}
+    ports:
+      - "8000:8000"

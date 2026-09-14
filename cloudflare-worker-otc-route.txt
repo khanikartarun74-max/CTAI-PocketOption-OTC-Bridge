@@ -1,0 +1,59 @@
+CTAI V6.2.11 — Cloudflare Worker OTC route
+===========================================
+
+Add these environment variables to the Cloudflare Worker:
+
+OTC_BRIDGE_URL
+  Example: https://YOUR-BRIDGE-DOMAIN.example.com
+
+OTC_BRIDGE_API_KEY
+  The same long random secret configured on the bridge.
+
+IMPORTANT:
+- These are Worker secrets/variables. Do not put them in index.html.
+- Do not paste the API key or Pocket Option SSID into ChatGPT.
+
+Route logic
+-----------
+
+Inside your existing Worker fetch handler, before the final 404 response,
+add an OTC route equivalent to:
+
+if (url.pathname === "/api/otc/candles") {
+  const upstream = new URL(env.OTC_BRIDGE_URL + "/api/otc/candles");
+  upstream.search = url.search;
+
+  const r = await fetch(upstream.toString(), {
+    method: "GET",
+    headers: {
+      "X-CTAI-Bridge-Key": env.OTC_BRIDGE_API_KEY
+    }
+  });
+
+  return new Response(await r.text(), {
+    status: r.status,
+    headers: {
+      "content-type": "application/json; charset=utf-8",
+      "cache-control": "no-store"
+    }
+  });
+}
+
+The existing CTAI app already calls:
+  /api/otc/candles?platform=Pocket%20Option&symbol=...&interval=1min&outputsize=120
+
+So the app does not need a new endpoint name.
+
+Recommended order
+-----------------
+1. Deploy this bridge.
+2. Set POCKET_OPTION_SSID on the bridge.
+3. Set BRIDGE_API_KEY on the bridge.
+4. Set OTC_BRIDGE_URL and OTC_BRIDGE_API_KEY in Cloudflare Worker.
+5. Deploy the Worker.
+6. Open:
+   https://YOUR-WORKER/api/otc/candles?platform=Pocket%20Option&symbol=AUD%2FCAD%20OTC&interval=1min&outputsize=120
+7. Only after the JSON contains real OHLC values should CTAI be expected to show
+   "OTC DATA CONNECTED".
+
+Do not use regular-market data as fallback.
