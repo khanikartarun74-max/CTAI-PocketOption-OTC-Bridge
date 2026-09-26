@@ -8,7 +8,7 @@ from fastapi import FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 
 try:
-    from binaryoptionstoolsv2 import PocketOptionAsync
+    from BinaryOptionsToolsV2 import PocketOptionAsync
 except Exception as exc:
     PocketOptionAsync = None
     IMPORT_ERROR = str(exc)
