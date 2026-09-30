@@ -2,7 +2,7 @@ import asyncio
 import os
 import time
 from collections import defaultdict, deque
-from typing import Dict, Optional
+from typing import Dict, Optional, List
 
 from fastapi import FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -16,7 +16,7 @@ else:
     IMPORT_ERROR = None
 
 
-APP_VERSION = "6.3.0"
+APP_VERSION = "6.4.0"
 
 app = FastAPI(
     title="CTAI Pocket Option OTC Bridge",
@@ -41,23 +41,6 @@ BRIDGE_API_KEY = os.getenv("BRIDGE_API_KEY", "").strip()
 
 
 # ============================================================
-# POCKET OPTION OTC SYMBOL MAP
-# ============================================================
-
-SYMBOLS = {
-    "EUR/USD OTC": "EURUSD_otc",
-    "AUD/CAD OTC": "AUDCAD_otc",
-    "AUD/CHF OTC": "AUDCHF_otc",
-    "USD/SGD OTC": "USDSGD_otc",
-    "GBP/USD OTC": "GBPUSD_otc",
-    "USD/JPY OTC": "USDJPY_otc",
-    "BTC/USD OTC": "BTCUSD_otc",
-    "ETH/USD OTC": "ETHUSD_otc",
-    "XAU/USD OTC": "XAUUSD_otc",
-}
-
-
-# ============================================================
 # RUNTIME STATE
 # ============================================================
 
@@ -74,6 +57,11 @@ client_ready = False
 asset_load_error: Optional[str] = None
 client_error: Optional[str] = None
 
+# Dynamic Pocket Option asset registry
+asset_lock = asyncio.Lock()
+asset_registry: Dict[str, dict] = {}
+otc_registry: Dict[str, dict] = {}
+
 
 # ============================================================
 # AUTH
@@ -84,44 +72,272 @@ def auth_ok(key: Optional[str]) -> bool:
 
 
 # ============================================================
-# SYMBOL NORMALIZATION
+# ASSET HELPERS
 # ============================================================
 
-def normalize_symbol(symbol: str) -> str:
+def asset_symbol(asset: dict) -> str:
+    return str(asset.get("symbol", "")).strip()
+
+
+def asset_name(asset: dict) -> str:
+    return str(
+        asset.get("name")
+        or asset.get("symbol")
+        or ""
+    ).strip()
+
+
+def is_otc_asset(asset: dict) -> bool:
+    value = asset.get("is_otc")
+
+    if isinstance(value, bool):
+        return value
+
+    if isinstance(value, str):
+        return value.strip().lower() in (
+            "true",
+            "1",
+            "yes",
+            "y",
+        )
+
+    if isinstance(value, int):
+        return value == 1
+
+    return False
+
+
+def is_active_asset(asset: dict) -> bool:
+    value = asset.get("is_active")
+
+    if value is None:
+        return True
+
+    if isinstance(value, bool):
+        return value
+
+    if isinstance(value, str):
+        return value.strip().lower() in (
+            "true",
+            "1",
+            "yes",
+            "y",
+        )
+
+    if isinstance(value, int):
+        return value == 1
+
+    return bool(value)
+
+
+def asset_to_public(asset: dict) -> dict:
+    return {
+        "symbol": asset_symbol(asset),
+        "name": asset_name(asset),
+        "asset_type": asset.get("asset_type"),
+        "payout": asset.get("payout"),
+        "is_otc": bool(is_otc_asset(asset)),
+        "is_active": bool(is_active_asset(asset)),
+        "allowed_candles": asset.get(
+            "allowed_candles",
+            [],
+        ),
+    }
+
+
+# ============================================================
+# REFRESH DYNAMIC ASSET LIST
+# ============================================================
+
+async def refresh_assets(
+    api=None,
+) -> List[dict]:
+
+    global asset_load_error
+
+    if api is None:
+        api = await ensure_client()
+
+    async with asset_lock:
+
+        try:
+
+            print(
+                "[CTAI] Reading active Pocket Option assets...",
+                flush=True,
+            )
+
+            assets = await api.active_assets()
+
+            if not isinstance(assets, list):
+                raise RuntimeError(
+                    "Pocket Option active_assets() "
+                    "returned an unexpected format"
+                )
+
+            new_registry: Dict[str, dict] = {}
+            new_otc_registry: Dict[str, dict] = {}
+
+            for raw in assets:
+
+                if not isinstance(raw, dict):
+                    continue
+
+                symbol = asset_symbol(raw)
+
+                if not symbol:
+                    continue
+
+                normalized = dict(raw)
+
+                new_registry[symbol] = normalized
+
+                if (
+                    is_otc_asset(normalized)
+                    and is_active_asset(normalized)
+                ):
+                    new_otc_registry[symbol] = normalized
+
+            asset_registry.clear()
+            asset_registry.update(new_registry)
+
+            otc_registry.clear()
+            otc_registry.update(new_otc_registry)
+
+            asset_load_error = None
+
+            print(
+                "[CTAI] Active assets loaded: "
+                f"{len(asset_registry)} total, "
+                f"{len(otc_registry)} OTC",
+                flush=True,
+            )
+
+            return list(otc_registry.values())
+
+        except Exception as exc:
+
+            asset_load_error = repr(exc)
+
+            print(
+                "[CTAI] Dynamic asset discovery failed: "
+                f"{asset_load_error}",
+                flush=True,
+            )
+
+            raise
+
+
+# ============================================================
+# SYMBOL RESOLUTION
+# ============================================================
+
+def normalize_symbol_from_registry(
+    symbol: str,
+) -> Optional[str]:
+
     raw = symbol.strip()
 
-    if raw in SYMBOLS:
-        return SYMBOLS[raw]
+    if not raw:
+        return None
+
+    # Exact broker symbol
+    if raw in otc_registry:
+        return raw
 
     upper = raw.upper()
 
-    for display_name, broker_name in SYMBOLS.items():
-        if upper == display_name.upper():
-            return broker_name
+    # Case-insensitive broker symbol
+    for broker_symbol in otc_registry:
 
-    if upper.endswith(" OTC"):
-        compact = upper[:-4].replace("/", "")
-        return compact + "_otc"
+        if broker_symbol.upper() == upper:
+            return broker_symbol
 
-    compact = upper.replace("/", "")
+    # Match human-readable asset name
+    for broker_symbol, asset in otc_registry.items():
 
-    if not compact.endswith("_OTC"):
-        return compact + "_otc"
+        name = asset_name(asset)
 
-    return compact
+        if (
+            name
+            and name.upper() == upper
+        ):
+            return broker_symbol
+
+    # Common display format:
+    # EUR/USD OTC -> EURUSD_otc
+    compact = (
+        upper
+        .replace("/", "")
+        .replace(" ", "")
+    )
+
+    if compact.endswith("_OTC"):
+        candidate = compact[:-4] + "_otc"
+    elif compact.endswith("OTC"):
+        candidate = compact[:-3] + "_otc"
+    else:
+        candidate = compact + "_otc"
+
+    for broker_symbol in otc_registry:
+
+        if broker_symbol.upper() == candidate.upper():
+            return broker_symbol
+
+    return None
+
+
+# ============================================================
+# DISPLAY NAME
+# ============================================================
+
+def display_symbol(
+    broker_symbol: str,
+) -> str:
+
+    asset = otc_registry.get(
+        broker_symbol
+    )
+
+    if asset:
+        name = asset_name(asset)
+
+        if name:
+            return name
+
+    # Fallback formatting
+    if broker_symbol.lower().endswith("_otc"):
+
+        base = broker_symbol[:-4]
+
+        if len(base) == 6:
+            return (
+                f"{base[:3]}/{base[3:]} OTC"
+            )
+
+        return f"{base} OTC"
+
+    return broker_symbol
 
 
 # ============================================================
 # CANDLE CLEANING
 # ============================================================
 
-def clean_candle(c: dict) -> Optional[dict]:
+def clean_candle(
+    c: dict,
+) -> Optional[dict]:
+
     try:
+
         ts = int(
             float(
                 c.get(
                     "time",
-                    c.get("timestamp", 0)
+                    c.get(
+                        "timestamp",
+                        0,
+                    ),
                 )
             )
         )
@@ -137,7 +353,12 @@ def clean_candle(c: dict) -> Optional[dict]:
         if ts <= 0:
             return None
 
-        if min(o, h, l, close) <= 0:
+        if min(
+            o,
+            h,
+            l,
+            close,
+        ) <= 0:
             return None
 
         return {
@@ -162,20 +383,32 @@ def merge_candles(
 ) -> None:
 
     for raw in candles:
+
         candle = clean_candle(raw)
 
         if candle is not None:
-            cache[broker_symbol].append(candle)
+            cache[
+                broker_symbol
+            ].append(candle)
 
     unique = {}
 
-    for candle in cache[broker_symbol]:
-        unique[candle["datetime"]] = candle
+    for candle in cache[
+        broker_symbol
+    ]:
+        unique[
+            candle["datetime"]
+        ] = candle
 
-    cache[broker_symbol].clear()
+    cache[
+        broker_symbol
+    ].clear()
 
     for timestamp in sorted(unique):
-        cache[broker_symbol].append(
+
+        cache[
+            broker_symbol
+        ].append(
             unique[timestamp]
         )
 
@@ -191,28 +424,38 @@ async def ensure_client():
     global asset_load_error
     global client_error
 
-    if client is not None and client_ready:
+    if (
+        client is not None
+        and client_ready
+    ):
         return client
 
     if PocketOptionAsync is None:
+
         raise RuntimeError(
             "BinaryOptionsToolsV2 import failed: "
             + str(IMPORT_ERROR)
         )
 
     if not SSID:
+
         raise RuntimeError(
             "POCKET_OPTION_SSID is not configured"
         )
 
     async with client_lock:
 
-        if client is not None and client_ready:
+        if (
+            client is not None
+            and client_ready
+        ):
             return client
 
         client_ready = False
         asset_load_error = None
         client_error = None
+
+        new_client = None
 
         try:
 
@@ -235,8 +478,9 @@ async def ensure_client():
                 flush=True,
             )
 
-            # Public API documented by BinaryOptionsToolsV2.
-            await new_client.wait_for_assets()
+            await new_client.wait_for_assets(
+                60.0
+            )
 
             print(
                 "[CTAI] Pocket Option assets loaded.",
@@ -245,6 +489,11 @@ async def ensure_client():
 
             client = new_client
             client_ready = True
+
+            # Immediately discover assets
+            await refresh_assets(
+                client
+            )
 
             return client
 
@@ -262,8 +511,10 @@ async def ensure_client():
             )
 
             try:
-                if "new_client" in locals():
+
+                if new_client is not None:
                     await new_client.shutdown()
+
             except Exception:
                 pass
 
@@ -289,8 +540,21 @@ async def stream_asset(
 
             api = await ensure_client()
 
+            # Verify symbol still exists in
+            # the currently discovered OTC registry.
+            if broker_symbol not in otc_registry:
+
+                await refresh_assets(api)
+
+            if broker_symbol not in otc_registry:
+
+                raise RuntimeError(
+                    "OTC asset is not currently active: "
+                    + broker_symbol
+                )
+
             print(
-                f"[OTC] Starting candle stream: "
+                "[OTC] Starting candle stream: "
                 f"{broker_symbol}",
                 flush=True,
             )
@@ -302,10 +566,14 @@ async def stream_asset(
                 max_rows=150,
             ):
 
-                merged = list(closed or [])
+                merged = list(
+                    closed or []
+                )
 
                 if forming:
-                    merged.append(forming)
+                    merged.append(
+                        forming
+                    )
 
                 if merged:
 
@@ -317,13 +585,14 @@ async def stream_asset(
                     print(
                         f"[OTC] {broker_symbol}: "
                         f"{len(cache[broker_symbol])} "
-                        f"candles cached",
+                        "candles cached",
                         flush=True,
                     )
 
             backoff = 3
 
         except asyncio.CancelledError:
+
             raise
 
         except Exception as exc:
@@ -331,7 +600,8 @@ async def stream_asset(
             error_text = repr(exc)
 
             print(
-                f"[OTC] {broker_symbol} stream error: "
+                f"[OTC] {broker_symbol} "
+                "stream error: "
                 f"{error_text}",
                 flush=True,
             )
@@ -339,10 +609,15 @@ async def stream_asset(
             global client_ready
             global client_error
 
-            client_ready = False
+            client_ready = (
+                client is not None
+            )
+
             client_error = error_text
 
-            await asyncio.sleep(backoff)
+            await asyncio.sleep(
+                backoff
+            )
 
             backoff = min(
                 backoff * 2,
@@ -358,13 +633,22 @@ async def start_symbol(
     broker_symbol: str,
 ):
 
-    task = tasks.get(broker_symbol)
+    task = tasks.get(
+        broker_symbol
+    )
 
-    if task and not task.done():
+    if (
+        task
+        and not task.done()
+    ):
         return
 
-    tasks[broker_symbol] = asyncio.create_task(
-        stream_asset(broker_symbol)
+    tasks[
+        broker_symbol
+    ] = asyncio.create_task(
+        stream_asset(
+            broker_symbol
+        )
     )
 
 
@@ -386,47 +670,68 @@ async def startup():
     )
 
     print(
-        f"[CTAI] SSID configured: {bool(SSID)}",
+        "[CTAI] SSID configured: "
+        f"{bool(SSID)}",
         flush=True,
     )
 
     print(
-        f"[CTAI] Bridge key configured: "
+        "[CTAI] Bridge key configured: "
         f"{bool(BRIDGE_API_KEY)}",
         flush=True,
     )
 
     try:
 
-        await ensure_client()
+        api = await ensure_client()
 
         print(
             "[CTAI] Pocket Option connection ready.",
             flush=True,
         )
 
+        # Keep the two streams that are already
+        # proven to work in 6.3.0.
+        for preferred in (
+            "EURUSD_otc",
+            "AUDCAD_otc",
+        ):
+
+            if preferred in otc_registry:
+
+                await start_symbol(
+                    preferred
+                )
+
+                print(
+                    "[CTAI] Initial OTC stream started: "
+                    f"{preferred}",
+                    flush=True,
+                )
+
+            else:
+
+                print(
+                    "[CTAI] Preferred startup asset "
+                    "not currently active: "
+                    f"{preferred}",
+                    flush=True,
+                )
+
+        print(
+            "[CTAI] Dynamic OTC discovery ready.",
+            flush=True,
+        )
+
     except Exception as exc:
 
         print(
-            "[CTAI] Startup asset initialization failed: "
+            "[CTAI] Startup initialization failed: "
             f"{repr(exc)}",
             flush=True,
         )
 
         return
-
-    await start_symbol(
-        SYMBOLS["EUR/USD OTC"]
-    )
-
-    await start_symbol(
-        SYMBOLS["AUD/CAD OTC"]
-    )
-
-    print(
-        "[CTAI] Initial OTC streams started.",
-        flush=True,
-    )
 
 
 # ============================================================
@@ -463,7 +768,8 @@ async def shutdown():
     except Exception as exc:
 
         print(
-            f"[CTAI] Shutdown warning: {exc}",
+            "[CTAI] Shutdown warning: "
+            f"{exc}",
             flush=True,
         )
 
@@ -481,20 +787,106 @@ async def health():
         "version": APP_VERSION,
 
         "ssid_configured": bool(SSID),
-        "bridge_key_configured": bool(BRIDGE_API_KEY),
+        "bridge_key_configured": bool(
+            BRIDGE_API_KEY
+        ),
 
-        "client_created": client is not None,
+        "client_created": (
+            client is not None
+        ),
+
         "client_ready": client_ready,
 
         "asset_load_error": asset_load_error,
         "client_error": client_error,
 
-        "symbols": {
-            display_name: len(cache[broker_name])
-            for display_name, broker_name in SYMBOLS.items()
+        "asset_count": len(
+            asset_registry
+        ),
+
+        "otc_asset_count": len(
+            otc_registry
+        ),
+
+        "otc_assets": [
+            asset_to_public(asset)
+            for asset in sorted(
+                otc_registry.values(),
+                key=lambda x: asset_symbol(x),
+            )
+        ],
+
+        "active_streams": [
+            symbol
+            for symbol, task in tasks.items()
+            if task
+            and not task.done()
+        ],
+
+        "cached_candles": {
+            symbol: len(cache[symbol])
+            for symbol in tasks.keys()
         },
 
-        "time": int(time.time()),
+        "time": int(
+            time.time()
+        ),
+    }
+
+
+# ============================================================
+# OTC ASSETS API
+# ============================================================
+
+@app.get("/api/otc/assets")
+async def otc_assets(
+    x_ctai_bridge_key: Optional[str] = Header(
+        default=None
+    ),
+):
+
+    if not auth_ok(
+        x_ctai_bridge_key
+    ):
+
+        raise HTTPException(
+            status_code=401,
+            detail="Unauthorized",
+        )
+
+    api = await ensure_client()
+
+    # Refresh before returning list so
+    # CTAI receives current Pocket Option assets.
+    assets = await refresh_assets(
+        api
+    )
+
+    result = []
+
+    for asset in sorted(
+        assets,
+        key=lambda x: (
+            asset_name(x).upper(),
+            asset_symbol(x).upper(),
+        ),
+    ):
+
+        result.append(
+            asset_to_public(
+                asset
+            )
+        )
+
+    return {
+        "ok": True,
+        "source": "pocket_option_otc",
+        "platform": "Pocket Option",
+        "count": len(result),
+        "assets": result,
+        "server_time": int(
+            time.time()
+        ),
     }
 
 
@@ -526,7 +918,9 @@ async def otc_candles(
     ),
 ):
 
-    if not auth_ok(x_ctai_bridge_key):
+    if not auth_ok(
+        x_ctai_bridge_key
+    ):
 
         raise HTTPException(
             status_code=401,
@@ -553,45 +947,13 @@ async def otc_candles(
             ),
         )
 
-    broker_symbol = normalize_symbol(symbol)
+    api = await ensure_client()
 
-    await start_symbol(
-        broker_symbol
+    broker_symbol = (
+        normalize_symbol_from_registry(
+            symbol
+        )
     )
 
-    rows = list(
-        cache.get(
-            broker_symbol,
-            [],
-        )
-    )[-outputsize:]
-
-    if len(rows) < 5:
-
-        return {
-            "ok": False,
-            "source": "pocket_option_otc",
-            "platform": "Pocket Option",
-            "symbol": symbol,
-            "broker_symbol": broker_symbol,
-            "interval": interval,
-            "values": [],
-            "status": "WAITING",
-            "message": "Waiting for verified OTC candles",
-            "client_ready": client_ready,
-            "asset_load_error": asset_load_error,
-            "client_error": client_error,
-            "server_time": int(time.time()),
-        }
-
-    return {
-        "ok": True,
-        "source": "pocket_option_otc",
-        "platform": "Pocket Option",
-        "symbol": symbol,
-        "broker_symbol": broker_symbol,
-        "interval": interval,
-        "values": rows,
-        "status": "CONNECTED",
-        "server_time": int(time.time()),
-    }
+    # If not found, refresh the live asset
+    # list once before rejecting the s
