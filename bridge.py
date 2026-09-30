@@ -89,6 +89,7 @@ async def ensure_client():
     async with client_lock:
         if client is None:
             client = PocketOptionAsync(SSID)
+            await client.wait_for_assets()
             await asyncio.sleep(2)
     return client
 
