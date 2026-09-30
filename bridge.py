@@ -88,7 +88,7 @@ async def ensure_client():
         raise RuntimeError("POCKET_OPTION_SSID is not configured")
     async with client_lock:
         if client is None:
-            client = await PocketOptionAsync(SSID)
+            client = PocketOptionAsync(SSID)
             await asyncio.sleep(2)
     return client
 
