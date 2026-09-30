@@ -1034,6 +1034,109 @@ async def otc_candles(
             symbol
         )
     )
+    # ============================================================
+# TEMPORARY CANDLE DATA TEST API
+# ============================================================
+
+@app.get("/api/otc/candles-test")
+async def otc_candles_test(
+    symbol: str = Query("EURUSD_otc"),
+    outputsize: int = Query(10, ge=1, le=20),
+):
+    try:
+        # ----------------------------------------------------
+        # Ensure Pocket Option client is ready
+        # ----------------------------------------------------
+        api = await ensure_client()
+
+        # ----------------------------------------------------
+        # Resolve requested symbol from live OTC registry
+        # ----------------------------------------------------
+        test_symbol = normalize_symbol_from_registry(symbol)
+
+        # If symbol is not found, refresh assets once
+        if not test_symbol:
+            await refresh_assets(api)
+            test_symbol = normalize_symbol_from_registry(symbol)
+
+        # ----------------------------------------------------
+        # Asset not found
+        # ----------------------------------------------------
+        if not test_symbol:
+            return {
+                "ok": False,
+                "version": APP_VERSION,
+                "source": "pocket_option_otc",
+                "symbol": symbol,
+                "status": "ASSET_NOT_FOUND",
+                "client_ready": client_ready,
+                "asset_load_error": asset_load_error,
+                "client_error": client_error,
+                "server_time": int(time.time()),
+            }
+
+        # ----------------------------------------------------
+        # Start / confirm live candle stream
+        # ----------------------------------------------------
+        await start_symbol(test_symbol)
+
+        # ----------------------------------------------------
+        # Read cached candles
+        # ----------------------------------------------------
+        rows = list(
+            cache.get(
+                test_symbol,
+                [],
+            )
+        )
+
+        # Return only requested number of latest candles
+        latest = rows[-outputsize:]
+
+        # ----------------------------------------------------
+        # Success response
+        # ----------------------------------------------------
+        return {
+            "ok": True,
+            "version": APP_VERSION,
+            "source": "pocket_option_otc",
+            "symbol": test_symbol,
+            "display_name": display_symbol(test_symbol),
+            "asset_found": True,
+            "stream_active": bool(
+                tasks.get(test_symbol)
+                and not tasks[test_symbol].done()
+            ),
+            "candle_count": len(rows),
+            "returned": len(latest),
+            "values": latest,
+            "client_ready": client_ready,
+            "asset_load_error": asset_load_error,
+            "client_error": client_error,
+            "status": (
+                "CONNECTED"
+                if len(latest) >= 5
+                else "WAITING"
+            ),
+            "server_time": int(time.time()),
+        }
+
+    # --------------------------------------------------------
+    # Unexpected error
+    # --------------------------------------------------------
+    except Exception as exc:
+        return {
+            "ok": False,
+            "version": APP_VERSION,
+            "source": "pocket_option_otc",
+            "symbol": symbol,
+            "status": "ERROR",
+            "error": str(exc),
+            "client_ready": client_ready,
+            "asset_load_error": asset_load_error,
+            "client_error": client_error,
+            "server_time": int(time.time()),
+    }
 
     # If not found, refresh the live asset
     # list once before rejecting the s
