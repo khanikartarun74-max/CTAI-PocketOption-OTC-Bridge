@@ -594,4 +594,4 @@ async def otc_candles(
         "values": rows,
         "status": "CONNECTED",
         "server_time": int(time.time()),
-}
+    }
