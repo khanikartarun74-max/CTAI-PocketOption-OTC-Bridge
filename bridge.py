@@ -888,6 +888,86 @@ async def otc_assets(
             time.time()
         ),
     }
+# ============================================================
+# TEMPORARY BROWSER TEST API
+# ============================================================
+
+@app.get("/api/otc/test")
+async def otc_test():
+
+    test_symbol = "EURUSD_otc"
+
+    try:
+        api = await ensure_client()
+
+        # Refresh live Pocket Option assets
+        await refresh_assets(api)
+
+        # Confirm the test asset exists
+        if test_symbol not in otc_registry:
+
+            return {
+                "ok": False,
+                "version": APP_VERSION,
+                "source": "pocket_option_otc",
+                "symbol": test_symbol,
+                "asset_found": False,
+                "client_ready": client_ready,
+                "asset_load_error": asset_load_error,
+                "client_error": client_error,
+                "message": "EUR/USD OTC is not currently available",
+                "server_time": int(time.time()),
+            }
+
+        # Start the existing proven stream
+        await start_symbol(test_symbol)
+
+        rows = list(
+            cache.get(
+                test_symbol,
+                [],
+            )
+        )
+
+        return {
+            "ok": True,
+            "version": APP_VERSION,
+            "source": "pocket_option_otc",
+            "symbol": test_symbol,
+            "display_name": display_symbol(
+                test_symbol
+            ),
+            "asset_found": True,
+            "stream_active": bool(
+                tasks.get(test_symbol)
+                and not tasks[test_symbol].done()
+            ),
+            "candle_count": len(rows),
+            "client_ready": client_ready,
+            "asset_load_error": asset_load_error,
+            "client_error": client_error,
+            "status": (
+                "CONNECTED"
+                if len(rows) >= 5
+                else "WAITING"
+            ),
+            "server_time": int(time.time()),
+        }
+
+    except Exception as exc:
+
+        return {
+            "ok": False,
+            "version": APP_VERSION,
+            "source": "pocket_option_otc",
+            "symbol": test_symbol,
+            "status": "ERROR",
+            "error": str(exc),
+            "client_ready": client_ready,
+            "asset_load_error": asset_load_error,
+            "client_error": client_error,
+            "server_time": int(time.time()),
+        }
 
 
 # ============================================================
