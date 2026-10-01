@@ -968,57 +968,43 @@ async def otc_test():
             "client_error": client_error,
             "server_time": int(time.time()),
         }
-
-
 # ============================================================
 # OTC CANDLES API
 # ============================================================
 
 @app.get("/api/otc/candles")
 async def otc_candles(
-
-    platform: str = Query(
-        "Pocket Option"
-    ),
-
+    platform: str = Query("Pocket Option"),
     symbol: str = Query(...),
-
-    interval: str = Query(
-        "1min"
-    ),
-
-    outputsize: int = Query(
-        120,
-        ge=1,
-        le=180,
-    ),
-
+    interval: str = Query("1min"),
+    outputsize: int = Query(120, ge=1, le=180),
     x_ctai_bridge_key: Optional[str] = Header(
         default=None
     ),
 ):
 
-    if not auth_ok(
-        x_ctai_bridge_key
-    ):
-
+    # --------------------------------------------------------
+    # 1. Authentication
+    # --------------------------------------------------------
+    if not auth_ok(x_ctai_bridge_key):
         raise HTTPException(
             status_code=401,
             detail="Unauthorized",
         )
 
-    if (
-        platform.strip().lower()
-        != "pocket option"
-    ):
-
+    # --------------------------------------------------------
+    # 2. Platform validation
+    # --------------------------------------------------------
+    if platform.strip().lower() != "pocket option":
         raise HTTPException(
             status_code=400,
             detail="Unsupported platform",
         )
 
+    # --------------------------------------------------------
+    # 3. Current bridge serves 1-minute OTC candles
+    # --------------------------------------------------------
     if interval != "1min":
-
         raise HTTPException(
             status_code=400,
             detail=(
@@ -1027,13 +1013,140 @@ async def otc_candles(
             ),
         )
 
-    api = await ensure_client()
+    try:
+        # ----------------------------------------------------
+        # 4. Ensure Pocket Option client is ready
+        # ----------------------------------------------------
+        api = await ensure_client()
 
-    broker_symbol = (
-        normalize_symbol_from_registry(
-            symbol
+        # ----------------------------------------------------
+        # 5. Resolve symbol from live OTC registry
+        # ----------------------------------------------------
+        broker_symbol = (
+            normalize_symbol_from_registry(
+                symbol
+            )
         )
-    )
+
+        # ----------------------------------------------------
+        # 6. Refresh registry once if symbol is not found
+        # ----------------------------------------------------
+        if not broker_symbol:
+            await refresh_assets(api)
+
+            broker_symbol = (
+                normalize_symbol_from_registry(
+                    symbol
+                )
+            )
+
+        # ----------------------------------------------------
+        # 7. Asset not found
+        # ----------------------------------------------------
+        if not broker_symbol:
+            return {
+                "ok": False,
+                "version": APP_VERSION,
+                "source": "pocket_option_otc",
+                "platform": "Pocket Option",
+                "symbol": symbol,
+                "interval": interval,
+                "status": "ASSET_NOT_FOUND",
+                "client_ready": client_ready,
+                "asset_load_error": asset_load_error,
+                "client_error": client_error,
+                "server_time": int(time.time()),
+            }
+
+        # ----------------------------------------------------
+        # 8. Start / confirm live candle stream
+        # ----------------------------------------------------
+        await start_symbol(broker_symbol)
+
+        # ----------------------------------------------------
+        # 9. Read current candle cache
+        # ----------------------------------------------------
+        rows = list(
+            cache.get(
+                broker_symbol,
+                [],
+            )
+        )
+
+        # ----------------------------------------------------
+        # 10. Give the live stream a short time to populate
+        #     if cache is still empty
+        # ----------------------------------------------------
+        if len(rows) < 1:
+
+            for _ in range(10):
+
+                await asyncio.sleep(0.5)
+
+                rows = list(
+                    cache.get(
+                        broker_symbol,
+                        [],
+                    )
+                )
+
+                if len(rows) >= 1:
+                    break
+
+        # ----------------------------------------------------
+        # 11. Return latest requested candles
+        # ----------------------------------------------------
+        latest = rows[-outputsize:]
+
+        return {
+            "ok": True,
+            "version": APP_VERSION,
+            "source": "pocket_option_otc",
+            "platform": "Pocket Option",
+            "symbol": broker_symbol,
+            "display_name": display_symbol(
+                broker_symbol
+            ),
+            "interval": interval,
+            "asset_found": True,
+            "stream_active": bool(
+                tasks.get(broker_symbol)
+                and not tasks[broker_symbol].done()
+            ),
+            "candle_count": len(rows),
+            "returned": len(latest),
+            "values": latest,
+            "client_ready": client_ready,
+            "asset_load_error": asset_load_error,
+            "client_error": client_error,
+            "status": (
+                "CONNECTED"
+                if len(latest) >= 5
+                else "WAITING"
+            ),
+            "server_time": int(time.time()),
+        }
+
+    # --------------------------------------------------------
+    # 12. Unexpected error
+    # --------------------------------------------------------
+    except Exception as exc:
+
+        return {
+            "ok": False,
+            "version": APP_VERSION,
+            "source": "pocket_option_otc",
+            "platform": "Pocket Option",
+            "symbol": symbol,
+            "interval": interval,
+            "status": "ERROR",
+            "error": str(exc),
+            "client_ready": client_ready,
+            "asset_load_error": asset_load_error,
+            "client_error": client_error,
+            "server_time": int(time.time()),
+        }
+    
 # ============================================================
 # TEMPORARY CANDLE DATA TEST API
 # ============================================================
