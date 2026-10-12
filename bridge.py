@@ -368,7 +368,6 @@ def clean_candle(c: dict) -> Optional[dict]:
 
     except (TypeError, ValueError, OverflowError, KeyError):
         return None
-        
 
 
 # ============================================================
@@ -380,36 +379,34 @@ def merge_candles(
     candles: list,
 ) -> None:
 
-    for raw in candles:
+    # Keep existing candles and merge incoming candles
+    # by timestamp before applying the cache limit.
+    existing = {}
 
-        candle = clean_candle(raw)
+    for candle in cache[broker_symbol]:
+        cleaned = clean_candle(candle)
 
-        if candle is not None:
-            cache[
-                broker_symbol
-            ].append(candle)
+        if cleaned is not None:
+            existing[cleaned["datetime"]] = cleaned
 
-    unique = {}
+    for raw in candles or []:
+        cleaned = clean_candle(raw)
 
-    for candle in cache[
-        broker_symbol
-    ]:
-        unique[
-            candle["datetime"]
-        ] = candle
+        if cleaned is not None:
+            existing[cleaned["datetime"]] = cleaned
 
-    cache[
-        broker_symbol
-    ].clear()
+    # Sort unique timestamps and retain the newest 150.
+    timestamps = sorted(existing)
 
-    for timestamp in sorted(unique):
+    latest_timestamps = timestamps[-150:]
 
-        cache[
-            broker_symbol
-        ].append(
-            unique[timestamp]
+    cache[broker_symbol].clear()
+
+    for timestamp in latest_timestamps:
+        cache[broker_symbol].append(
+            existing[timestamp]
         )
-
+        
 
 # ============================================================
 # CLIENT INITIALIZATION
