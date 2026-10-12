@@ -320,27 +320,17 @@ def display_symbol(
     return broker_symbol
 
 
+
 # ============================================================
 # CANDLE CLEANING
 # ============================================================
 
-def clean_candle(
-    c: dict,
-) -> Optional[dict]:
-
+def clean_candle(c: dict) -> Optional[dict]:
     try:
+        if not isinstance(c, dict):
+            return None
 
-        ts = int(
-            float(
-                c.get(
-                    "time",
-                    c.get(
-                        "timestamp",
-                        0,
-                    ),
-                )
-            )
-        )
+        ts = int(float(c.get("time", c.get("timestamp", 0))))
 
         if ts > 10_000_000_000:
             ts //= 1000
@@ -350,15 +340,21 @@ def clean_candle(
         l = float(c["low"])
         close = float(c["close"])
 
+        prices = (o, h, l, close)
+
+        # Reject non-finite or non-positive prices.
+        if not all(math.isfinite(v) and v > 0 for v in prices):
+            return None
+
+        # Reject invalid timestamps.
         if ts <= 0:
             return None
 
-        if min(
-            o,
-            h,
-            l,
-            close,
-        ) <= 0:
+        # Validate OHLC candle structure.
+        if h < max(o, close, l):
+            return None
+
+        if l > min(o, close, h):
             return None
 
         return {
@@ -369,8 +365,9 @@ def clean_candle(
             "close": close,
         }
 
-    except Exception:
+    except (TypeError, ValueError, OverflowError, KeyError):
         return None
+        
 
 
 # ============================================================
@@ -948,7 +945,7 @@ async def otc_test():
             "client_error": client_error,
             "status": (
                 "CONNECTED"
-                if len(rows) >= 5
+                if len(rows) >= 60
                 else "WAITING"
             ),
             "server_time": int(time.time()),
@@ -1121,7 +1118,7 @@ async def otc_candles(
             "client_error": client_error,
             "status": (
                 "CONNECTED"
-                if len(latest) >= 5
+                if len(latest) >= 60
                 else "WAITING"
             ),
             "server_time": int(time.time()),
@@ -1228,7 +1225,7 @@ async def otc_candles_test(
             "client_error": client_error,
             "status": (
                 "CONNECTED"
-                if len(latest) >= 5
+                if len(latest) >= 60
                 else "WAITING"
             ),
             "server_time": int(time.time()),
