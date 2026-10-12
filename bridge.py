@@ -547,6 +547,38 @@ async def stream_asset(
                     "OTC asset is not currently active: "
                     + broker_symbol
                 )
+                
+                # Fetch historical candles before live streaming.
+                try:
+                    historical = await asyncio.wait_for(
+                        api.get_candles_advanced(
+                            broker_symbol,
+                            60,
+                            int(time.time()),
+                            120,
+                        ),
+                        timeout=10.0,
+                    )
+
+                    if historical:
+                        merge_candles(
+                            broker_symbol,
+                            historical,
+                        )
+
+                    print(
+                        f"[OTC] {broker_symbol}: "
+                        f"historical fetch returned "
+                        f"{len(historical or [])} candles",
+                        flush=True,
+                    )
+
+                except Exception as exc:
+                    print(
+                        f"[OTC] {broker_symbol}: "
+                        f"historical fetch failed: {exc!r}",
+                        flush=True,
+                    )
 
             print(
                 "[OTC] Starting candle stream: "
