@@ -547,7 +547,7 @@ async def stream_asset(
                     "OTC asset is not currently active: "
                     + broker_symbol
                 )
-                 # Fetch historical candles before live streaming.
+            # Fetch historical candles before live streaming.
             try:
                 historical = await asyncio.wait_for(
                     api.get_candles_advanced(
@@ -650,7 +650,6 @@ async def stream_asset(
                 60,
             )
 
-
 # ============================================================
 # START SYMBOL
 # ============================================================
@@ -676,7 +675,6 @@ async def start_symbol(
             broker_symbol
         )
     )
-
 
 # ============================================================
 # STARTUP
@@ -759,7 +757,6 @@ async def startup():
 
         return
 
-
 # ============================================================
 # SHUTDOWN
 # ============================================================
@@ -798,7 +795,6 @@ async def shutdown():
             f"{exc}",
             flush=True,
         )
-
 
 # ============================================================
 # HEALTH
@@ -858,7 +854,6 @@ async def health():
             time.time()
         ),
     }
-
 
 # ============================================================
 # OTC ASSETS API
