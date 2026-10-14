@@ -547,8 +547,13 @@ async def stream_asset(
                     "OTC asset is not currently active: "
                     + broker_symbol
                 )
+                
             # Fetch historical candles before live streaming.
             try:
+                cache_before = len(
+                    cache.get(broker_symbol, [])
+                )
+
                 historical = await asyncio.wait_for(
                     api.get_candles_advanced(
                         broker_symbol,
@@ -559,6 +564,27 @@ async def stream_asset(
                     timeout=10.0,
                 )
 
+                historical_rows = (
+                    historical
+                    if isinstance(historical, (list, tuple))
+                    else []
+                )
+
+                valid_count = sum(
+                    1
+                    for candle in historical_rows
+                    if clean_candle(candle) is not None
+                )
+
+                print(
+                    f"[OTC-DIAG] {broker_symbol}: "
+                    f"historical_type={type(historical).__name__}, "
+                    f"raw_count={len(historical or [])}, "
+                    f"valid_count={valid_count}, "
+                    f"cache_before={cache_before}",
+                    flush=True,
+                )
+
                 if historical:
                     merge_candles(
                         broker_symbol,
@@ -566,16 +592,15 @@ async def stream_asset(
                     )
 
                 print(
-                    f"[OTC] {broker_symbol}: "
-                    f"historical fetch returned "
-                    f"{len(historical or [])} candles",
+                    f"[OTC-DIAG] {broker_symbol}: "
+                    f"cache_after={len(cache[broker_symbol])}",
                     flush=True,
                 )
 
             except Exception as exc:
                 print(
-                    f"[OTC] {broker_symbol}: "
-                    f"historical fetch failed: {exc!r}",
+                    f"[OTC-DIAG] {broker_symbol}: "
+                    f"historical_fetch_error={exc!r}",
                     flush=True,
                 )
 
@@ -584,54 +609,6 @@ async def stream_asset(
                 f"{broker_symbol}",
                 flush=True,
             )
-
-            async for closed, forming in api.get_candles_live(
-                broker_symbol,
-                period=60,
-                hours=2.0,
-                max_rows=150,
-            ):
-
-                merged = list(
-                    closed or []
-                )
-
-                if forming:
-                    merged.append(
-                        forming
-                    )
-
-                if merged:
-
-                    merge_candles(
-                        broker_symbol,
-                        merged,
-                    )
-
-                    print(
-                        f"[OTC] {broker_symbol}: "
-                        f"{len(cache[broker_symbol])} "
-                        "candles cached",
-                        flush=True,
-                    )
-
-            backoff = 3
-
-        except asyncio.CancelledError:
-
-            raise
-
-        except Exception as exc:
-
-            error_text = repr(exc)
-
-            print(
-                f"[OTC] {broker_symbol} "
-                "stream error: "
-                f"{error_text}",
-                flush=True,
-            )
-
             global client_ready
             global client_error
 
