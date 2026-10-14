@@ -609,6 +609,7 @@ async def stream_asset(
                 f"{broker_symbol}",
                 flush=True,
             )
+            
             global client_ready
             global client_error
 
