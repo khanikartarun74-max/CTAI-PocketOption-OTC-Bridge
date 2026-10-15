@@ -523,31 +523,28 @@ async def ensure_client():
 # LIVE OTC STREAM
 # ============================================================
 
-async def stream_asset(
+    async def stream_asset(
     broker_symbol: str,
 ):
+    global client_ready
+    global client_error
 
     backoff = 3
 
     while True:
-
         try:
-
             api = await ensure_client()
 
-            # Verify symbol still exists in
-            # the currently discovered OTC registry.
+            # Verify symbol is currently active.
             if broker_symbol not in otc_registry:
-
                 await refresh_assets(api)
 
             if broker_symbol not in otc_registry:
-
                 raise RuntimeError(
                     "OTC asset is not currently active: "
                     + broker_symbol
                 )
-                
+
             # Fetch historical candles before live streaming.
             try:
                 cache_before = len(
@@ -579,21 +576,22 @@ async def stream_asset(
                 print(
                     f"[OTC-DIAG] {broker_symbol}: "
                     f"historical_type={type(historical).__name__}, "
-                    f"raw_count={len(historical or [])}, "
+                    f"raw_count={len(historical_rows)}, "
                     f"valid_count={valid_count}, "
                     f"cache_before={cache_before}",
                     flush=True,
                 )
 
-                if historical:
+                if historical_rows:
                     merge_candles(
                         broker_symbol,
-                        historical,
+                        historical_rows,
                     )
 
                 print(
                     f"[OTC-DIAG] {broker_symbol}: "
-                    f"cache_after={len(cache[broker_symbol])}",
+                    f"cache_after="
+                    f"{len(cache.get(broker_symbol, []))}",
                     flush=True,
                 )
 
@@ -609,19 +607,52 @@ async def stream_asset(
                 f"{broker_symbol}",
                 flush=True,
             )
-            
-            global client_ready
-            global client_error
 
-            client_ready = (
-                client is not None
+            # Consume live candle updates continuously.
+            async for closed, forming in api.get_candles_live(
+                broker_symbol,
+                period=60,
+                hours=2.0,
+                max_rows=150,
+            ):
+                merged = list(closed or [])
+
+                if forming:
+                    merged.append(forming)
+
+                if merged:
+                    merge_candles(
+                        broker_symbol,
+                        merged,
+                    )
+
+                    print(
+                        f"[OTC] {broker_symbol}: "
+                        f"{len(cache.get(broker_symbol, []))} "
+                        "candles cached",
+                        flush=True,
+                    )
+
+                client_ready = client is not None
+                client_error = None
+                backoff = 3
+
+        except asyncio.CancelledError:
+            raise
+
+        except Exception as exc:
+            error_text = repr(exc)
+
+            print(
+                f"[OTC] {broker_symbol}: "
+                f"stream_error={error_text}",
+                flush=True,
             )
 
+            client_ready = client is not None
             client_error = error_text
 
-            await asyncio.sleep(
-                backoff
-            )
+            await asyncio.sleep(backoff)
 
             backoff = min(
                 backoff * 2,
