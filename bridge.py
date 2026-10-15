@@ -331,7 +331,9 @@ def clean_candle(c: dict) -> Optional[dict]:
         if not isinstance(c, dict):
             return None
 
-        ts = int(float(c.get("time", c.get("timestamp", 0))))
+        
+        ts = int(float(c.get("time", c.get("timestamp", c.get("datetime", 0)))))
+        
 
         if ts > 10_000_000_000:
             ts //= 1000
