@@ -522,8 +522,7 @@ async def ensure_client():
 # ============================================================
 # LIVE OTC STREAM
 # ============================================================
-
-    async def stream_asset(
+async def stream_asset(
     broker_symbol: str,
 ):
     global client_ready
