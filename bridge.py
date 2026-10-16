@@ -596,12 +596,18 @@ async def stream_asset(
                     flush=True,
                 )
 
-            except Exception as exc:
-                print(
-                    f"[OTC-DIAG] {broker_symbol}: "
-                    f"historical_fetch_error={exc!r}",
-                    flush=True,
-                )
+            
+            # Use the library's built-in historical backfill.
+            # Avoid a separate historical fetch with a different
+            # timestamp convention.
+            print(
+                f"[OTC-DIAG] {broker_symbol}: "
+                f"cache_before_live_backfill="
+                f"{len(cache.get(broker_symbol, []))}",
+                flush=True,
+            )
+
+            
 
             print(
                 "[OTC] Starting candle stream: "
