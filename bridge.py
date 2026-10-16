@@ -896,45 +896,53 @@ async def otc_assets(
             time.time()
         ),
     }
+
 # ============================================================
 # TEMPORARY BROWSER TEST API
 # ============================================================
 
 @app.get("/api/otc/test")
-async def otc_test():
-
-    test_symbol = "EURUSD_otc"
+async def otc_test(
+    symbol: str = Query("EURUSD_otc")
+):
+    test_symbol = symbol.strip()
 
     try:
         api = await ensure_client()
 
-        # Refresh live Pocket Option assets
+        # Refresh the current Pocket Option asset registry
         await refresh_assets(api)
 
-        # Confirm the test asset exists
+        # Check whether the requested symbol is available
         if test_symbol not in otc_registry:
-
             return {
                 "ok": False,
                 "version": APP_VERSION,
                 "source": "pocket_option_otc",
                 "symbol": test_symbol,
+                "display_name": display_symbol(test_symbol),
                 "asset_found": False,
+                "stream_active": False,
+                "candle_count": len(cache.get(test_symbol, [])),
                 "client_ready": client_ready,
                 "asset_load_error": asset_load_error,
                 "client_error": client_error,
-                "message": "EUR/USD OTC is not currently available",
+                "status": "NOT_FOUND",
+                "message": (
+                    f"{display_symbol(test_symbol)} "
+                    "is not currently available"
+                ),
                 "server_time": int(time.time()),
             }
 
-        # Start the existing proven stream
+        # Start or reuse the stream for the requested asset
         await start_symbol(test_symbol)
 
-        rows = list(
-            cache.get(
-                test_symbol,
-                [],
-            )
+        rows = list(cache.get(test_symbol, []))
+
+        stream_task = tasks.get(test_symbol)
+        stream_active = bool(
+            stream_task and not stream_task.done()
         )
 
         return {
@@ -942,14 +950,9 @@ async def otc_test():
             "version": APP_VERSION,
             "source": "pocket_option_otc",
             "symbol": test_symbol,
-            "display_name": display_symbol(
-                test_symbol
-            ),
+            "display_name": display_symbol(test_symbol),
             "asset_found": True,
-            "stream_active": bool(
-                tasks.get(test_symbol)
-                and not tasks[test_symbol].done()
-            ),
+            "stream_active": stream_active,
             "candle_count": len(rows),
             "client_ready": client_ready,
             "asset_load_error": asset_load_error,
@@ -963,12 +966,12 @@ async def otc_test():
         }
 
     except Exception as exc:
-
         return {
             "ok": False,
             "version": APP_VERSION,
             "source": "pocket_option_otc",
             "symbol": test_symbol,
+            "display_name": display_symbol(test_symbol),
             "status": "ERROR",
             "error": str(exc),
             "client_ready": client_ready,
@@ -976,9 +979,12 @@ async def otc_test():
             "client_error": client_error,
             "server_time": int(time.time()),
         }
+
+
 # ============================================================
 # OTC CANDLES API
 # ============================================================
+
 
 @app.get("/api/otc/candles")
 async def otc_candles(
