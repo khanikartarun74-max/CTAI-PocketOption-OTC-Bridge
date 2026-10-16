@@ -606,12 +606,13 @@ async def stream_asset(
                 f"{len(cache.get(broker_symbol, []))}",
                 flush=True,
             )
-
             
-
+            # Use the library's built-in historical backfill.
+            # Avoid a separate historical fetch.
             print(
-                "[OTC] Starting candle stream: "
-                f"{broker_symbol}",
+                f"[OTC-DIAG] {broker_symbol}: "
+                f"cache_before_live_backfill="
+                f"{len(cache.get(broker_symbol, []))}",
                 flush=True,
             )
 
