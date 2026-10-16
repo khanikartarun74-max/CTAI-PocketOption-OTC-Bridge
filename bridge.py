@@ -546,66 +546,6 @@ async def stream_asset(
                     + broker_symbol
                 )
 
-            # Fetch historical candles before live streaming.
-            try:
-                cache_before = len(
-                    cache.get(broker_symbol, [])
-                )
-
-                historical = await asyncio.wait_for(
-                    api.get_candles_advanced(
-                        broker_symbol,
-                        60,
-                        int(time.time()),
-                        120,
-                    ),
-                    timeout=10.0,
-                )
-
-                historical_rows = (
-                    historical
-                    if isinstance(historical, (list, tuple))
-                    else []
-                )
-
-                valid_count = sum(
-                    1
-                    for candle in historical_rows
-                    if clean_candle(candle) is not None
-                )
-
-                print(
-                    f"[OTC-DIAG] {broker_symbol}: "
-                    f"historical_type={type(historical).__name__}, "
-                    f"raw_count={len(historical_rows)}, "
-                    f"valid_count={valid_count}, "
-                    f"cache_before={cache_before}",
-                    flush=True,
-                )
-
-                if historical_rows:
-                    merge_candles(
-                        broker_symbol,
-                        historical_rows,
-                    )
-
-                print(
-                    f"[OTC-DIAG] {broker_symbol}: "
-                    f"cache_after="
-                    f"{len(cache.get(broker_symbol, []))}",
-                    flush=True,
-                )
-
-            
-            # Use the library's built-in historical backfill.
-            # Avoid a separate historical fetch with a different
-            # timestamp convention.
-            print(
-                f"[OTC-DIAG] {broker_symbol}: "
-                f"cache_before_live_backfill="
-                f"{len(cache.get(broker_symbol, []))}",
-                flush=True,
-            )
             
             # Use the library's built-in historical backfill.
             # Avoid a separate historical fetch.
@@ -615,6 +555,36 @@ async def stream_asset(
                 f"{len(cache.get(broker_symbol, []))}",
                 flush=True,
             )
+
+            # Consume live candle updates continuously.
+            async for closed, forming in api.get_candles_live(
+                broker_symbol,
+                period=60,
+                hours=2.0,
+                max_rows=150,
+            ):
+                merged = list(closed or [])
+
+                if forming:
+                    merged.append(forming)
+
+                if merged:
+                    merge_candles(
+                        broker_symbol,
+                        merged,
+                    )
+
+                    print(
+                        f"[OTC] {broker_symbol}: "
+                        f"{len(cache.get(broker_symbol, []))} "
+                        "candles cached",
+                        flush=True,
+                    )
+
+                client_ready = client is not None
+                client_error = None
+                backoff = 3
+                
 
             # Consume live candle updates continuously.
             async for closed, forming in api.get_candles_live(
