@@ -584,36 +584,6 @@ async def stream_asset(
                 client_ready = client is not None
                 client_error = None
                 backoff = 3
-                
-
-            # Consume live candle updates continuously.
-            async for closed, forming in api.get_candles_live(
-                broker_symbol,
-                period=60,
-                hours=2.0,
-                max_rows=150,
-            ):
-                merged = list(closed or [])
-
-                if forming:
-                    merged.append(forming)
-
-                if merged:
-                    merge_candles(
-                        broker_symbol,
-                        merged,
-                    )
-
-                    print(
-                        f"[OTC] {broker_symbol}: "
-                        f"{len(cache.get(broker_symbol, []))} "
-                        "candles cached",
-                        flush=True,
-                    )
-
-                client_ready = client is not None
-                client_error = None
-                backoff = 3
 
         except asyncio.CancelledError:
             raise
