@@ -767,36 +767,13 @@ async def startup():
             "EURUSD_otc",
             "AUDCAD_otc",
         ):
-                    print(
-                        "[OTC-DIAG] Connection status check failed: "
-                        + repr(status_error),
-                        flush=True,
-                    )
 
-            # Reset the shared client only when the
-            # underlying WebSocket is actually disconnected.
-            if (
-                api is not None
-                and broker_symbol in otc_registry
-                and not connection_alive
-            ):
+            if preferred in otc_registry:
 
-                await invalidate_client(
-                    api,
-                    error_text,
+                await start_symbol(
+                    preferred
                 )
-
-            else:
-
-                print(
-                    f"[OTC] {broker_symbol}: "
-                    "stream retry without resetting shared client",
-                    flush=True,
-                )
-
-                client_error = error_text
-                
-
+            
         print(
             "[CTAI] Dynamic OTC discovery ready.",
             flush=True,
