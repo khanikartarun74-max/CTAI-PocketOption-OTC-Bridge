@@ -746,20 +746,48 @@ async def startup():
                     preferred
                 )
 
-                print(
-                    "[CTAI] Initial OTC stream started: "
-                    f"{preferred}",
-                    flush=True,
+            
+            # Check whether the shared Pocket Option
+            # WebSocket connection is actually disconnected.
+            connection_alive = True
+
+            if api is not None:
+
+                try:
+
+                    connection_alive = api.is_connected()
+
+                except Exception as status_error:
+
+                    print(
+                        "[OTC-DIAG] Connection status check failed: "
+                        + repr(status_error),
+                        flush=True,
+                    )
+
+            # Reset the shared client only when the
+            # underlying WebSocket is actually disconnected.
+            if (
+                api is not None
+                and broker_symbol in otc_registry
+                and not connection_alive
+            ):
+
+                await invalidate_client(
+                    api,
+                    error_text,
                 )
 
             else:
 
                 print(
-                    "[CTAI] Preferred startup asset "
-                    "not currently active: "
-                    f"{preferred}",
+                    f"[OTC] {broker_symbol}: "
+                    "stream retry without resetting shared client",
                     flush=True,
                 )
+
+                client_error = error_text
+                
 
         print(
             "[CTAI] Dynamic OTC discovery ready.",
