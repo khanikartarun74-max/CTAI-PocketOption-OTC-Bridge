@@ -408,147 +408,89 @@ def merge_candles(
         cache[broker_symbol].append(
             existing[timestamp]
         )
-        
 
 # ============================================================
-# CLIENT INITIALIZATION
+# CLIENT INVALIDATION / SAFE RECONNECTION
 # ============================================================
 
-async def ensure_client():
+async def invalidate_client(failed_client, reason: str):
 
     global client
     global client_ready
-    global asset_load_error
     global client_error
 
-    if (
-        client is not None
-        and client_ready
-    ):
-        return client
-
-    if PocketOptionAsync is None:
-
-        raise RuntimeError(
-            "BinaryOptionsToolsV2 import failed: "
-            + str(IMPORT_ERROR)
-        )
-
-    if not SSID:
-
-        raise RuntimeError(
-            "POCKET_OPTION_SSID is not configured"
-        )
+    if failed_client is None:
+        return
 
     async with client_lock:
 
-        if (
-            client is not None
-            and client_ready
-        ):
-            return client
+        # Another asset may already have replaced this client.
+        if client is not failed_client:
+            return
 
+        old_client = client
+
+        client = None
         client_ready = False
-        asset_load_error = None
-        client_error = None
+        client_error = reason
 
-        new_client = None
+        print(
+            "[CTAI] Invalidating Pocket Option client: "
+            + reason,
+            flush=True,
+        )
 
         try:
 
+            await old_client.shutdown()
+
             print(
-                "[CTAI] Creating PocketOptionAsync client...",
+                "[CTAI] Old Pocket Option client shut down.",
                 flush=True,
             )
 
-            new_client = PocketOptionAsync(
-                ssid=SSID
-            )
+        except Exception as shutdown_error:
 
             print(
-                "[CTAI] PocketOptionAsync client created.",
+                "[CTAI] Old client shutdown warning: "
+                + repr(shutdown_error),
                 flush=True,
             )
-
-            print(
-                "[CTAI] Waiting for Pocket Option assets...",
-                flush=True,
-            )
-
-            await new_client.wait_for_assets(
-                60.0
-            )
-
-            print(
-                "[CTAI] Pocket Option assets loaded.",
-                flush=True,
-            )
-
-            client = new_client
-            client_ready = True
-
-            # Immediately discover assets
-            await refresh_assets(
-                client
-            )
-
-            return client
-
-        except Exception as exc:
-
-            error_text = repr(exc)
-
-            asset_load_error = error_text
-            client_error = error_text
-
-            print(
-                "[CTAI] Pocket Option initialization failed: "
-                + error_text,
-                flush=True,
-            )
-
-            try:
-
-                if new_client is not None:
-                    await new_client.shutdown()
-
-            except Exception:
-                pass
-
-            client = None
-            client_ready = False
-
-            raise
-
-
+            
 # ============================================================
-# LIVE OTC STREAM
+# LIVE OTC STREAM WITH AUTOMATIC CLIENT RECOVERY
 # ============================================================
+
 async def stream_asset(
     broker_symbol: str,
 ):
+
     global client_ready
     global client_error
 
     backoff = 3
 
     while True:
+
+        api = None
+
         try:
+
+            # Get a valid Pocket Option client.
             api = await ensure_client()
 
             # Verify symbol is currently active.
             if broker_symbol not in otc_registry:
+
                 await refresh_assets(api)
 
             if broker_symbol not in otc_registry:
+
                 raise RuntimeError(
                     "OTC asset is not currently active: "
                     + broker_symbol
                 )
 
-            
-            # Use the library's built-in historical backfill.
-            # Avoid a separate historical fetch.
             print(
                 f"[OTC-DIAG] {broker_symbol}: "
                 f"cache_before_live_backfill="
@@ -563,16 +505,30 @@ async def stream_asset(
                 hours=2.0,
                 max_rows=150,
             ):
+
+                # Another asset may have replaced this client.
+                if client is not api:
+                    break
+
                 merged = list(closed or [])
 
                 if forming:
                     merged.append(forming)
 
                 if merged:
+
                     merge_candles(
                         broker_symbol,
                         merged,
                     )
+
+                    # Only the current client can mark itself ready.
+                    if client is api:
+
+                        client_ready = True
+                        client_error = None
+
+                    backoff = 3
 
                     print(
                         f"[OTC] {broker_symbol}: "
@@ -581,14 +537,21 @@ async def stream_asset(
                         flush=True,
                     )
 
-                client_ready = client is not None
-                client_error = None
-                backoff = 3
+            # If this client is still active but its stream ended,
+            # treat it as a connection failure.
+            if client is api:
+
+                raise RuntimeError(
+                    "Live candle stream ended unexpectedly: "
+                    + broker_symbol
+                )
 
         except asyncio.CancelledError:
+
             raise
 
         except Exception as exc:
+
             error_text = repr(exc)
 
             print(
@@ -597,8 +560,20 @@ async def stream_asset(
                 flush=True,
             )
 
-            client_ready = client is not None
-            client_error = error_text
+            # Do not destroy a healthy client for an inactive symbol.
+            if (
+                api is not None
+                and broker_symbol in otc_registry
+            ):
+
+                await invalidate_client(
+                    api,
+                    error_text,
+                )
+
+            else:
+
+                client_error = error_text
 
             await asyncio.sleep(backoff)
 
