@@ -647,10 +647,31 @@ async def stream_asset(
                 flush=True,
             )
 
-            # Do not destroy a healthy client for an inactive symbol.
+            
+            # Check whether the shared Pocket Option
+            # WebSocket connection is actually disconnected.
+            connection_alive = True
+
+            if api is not None:
+
+                try:
+
+                    connection_alive = api.is_connected()
+
+                except Exception as status_error:
+
+                    print(
+                        "[OTC-DIAG] Connection status check failed: "
+                        + repr(status_error),
+                        flush=True,
+                    )
+
+            # Reset the shared client only when the
+            # underlying WebSocket is actually disconnected.
             if (
                 api is not None
                 and broker_symbol in otc_registry
+                and not connection_alive
             ):
 
                 await invalidate_client(
@@ -660,7 +681,14 @@ async def stream_asset(
 
             else:
 
+                print(
+                    f"[OTC] {broker_symbol}: "
+                    "stream retry without resetting shared client",
+                    flush=True,
+                )
+
                 client_error = error_text
+            
 
             await asyncio.sleep(backoff)
 
@@ -739,26 +767,6 @@ async def startup():
             "EURUSD_otc",
             "AUDCAD_otc",
         ):
-
-            if preferred in otc_registry:
-
-                await start_symbol(
-                    preferred
-                )
-
-            
-            # Check whether the shared Pocket Option
-            # WebSocket connection is actually disconnected.
-            connection_alive = True
-
-            if api is not None:
-
-                try:
-
-                    connection_alive = api.is_connected()
-
-                except Exception as status_error:
-
                     print(
                         "[OTC-DIAG] Connection status check failed: "
                         + repr(status_error),
