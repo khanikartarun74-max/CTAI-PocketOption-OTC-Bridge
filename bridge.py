@@ -761,11 +761,9 @@ async def startup():
             flush=True,
         )
 
-        # Keep the two streams that are already
-        # proven to work in 6.3.0.
+        # Temporary single-stream diagnostic test.
         for preferred in (
             "EURUSD_otc",
-            "AUDCAD_otc",
         ):
 
             if preferred in otc_registry:
