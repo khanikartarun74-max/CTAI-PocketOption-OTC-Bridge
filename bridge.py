@@ -42,6 +42,93 @@ BRIDGE_API_KEY = os.getenv("BRIDGE_API_KEY", "").strip()
 
 
 # ============================================================
+# POCKET OPTION CLIENT INITIALIZATION
+# ============================================================
+
+async def ensure_client():
+
+    global client
+    global client_ready
+    global client_error
+
+    async with client_lock:
+
+        # Reuse an already connected client.
+        if client is not None and client_ready:
+            return client
+
+        # Validate required configuration.
+        if not SSID:
+            raise RuntimeError(
+                "POCKET_OPTION_SSID is not configured"
+            )
+
+        if PocketOptionAsync is None:
+            raise RuntimeError(
+                "BinaryOptionsToolsV2 import failed: "
+                + str(IMPORT_ERROR)
+            )
+
+        new_client = None
+
+        try:
+
+            print(
+                "[CTAI] Connecting to Pocket Option...",
+                flush=True,
+            )
+
+            # Create a new Pocket Option client.
+            new_client = PocketOptionAsync(
+                ssid=SSID
+            )
+
+            # Wait for broker assets to become available.
+            await new_client.wait_for_assets(60.0)
+
+            # Load the current dynamic OTC asset registry.
+            await refresh_assets(new_client)
+
+            # Publish the client only after initialization succeeds.
+            client = new_client
+            client_ready = True
+            client_error = None
+
+            print(
+                "[CTAI] Pocket Option client initialized successfully.",
+                flush=True,
+            )
+
+            return client
+
+        except Exception as exc:
+
+            client = None
+            client_ready = False
+            client_error = repr(exc)
+
+            print(
+                "[CTAI] Pocket Option initialization failed: "
+                + repr(exc),
+                flush=True,
+            )
+
+            if new_client is not None:
+
+                try:
+                    await new_client.shutdown()
+
+                except Exception as shutdown_error:
+
+                    print(
+                        "[CTAI] Failed client cleanup warning: "
+                        + repr(shutdown_error),
+                        flush=True,
+                    )
+
+            raise
+
+# ============================================================
 # RUNTIME STATE
 # ============================================================
 
